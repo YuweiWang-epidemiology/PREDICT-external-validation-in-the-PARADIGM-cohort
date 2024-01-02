@@ -1,0 +1,529 @@
+---
+title: "PREDICT_PARADIGM: 4. complete cases"
+author: "Yuwei Wang"
+date:  "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+  toc_depth: 3  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# READ ME
+The R script is designed for our manuscript entitled the external validation and clinical utility assessment of PREDICT breast cancer prognostic model in young women with node-negative breast cancer. This R script assessed the model validity of PREDICT v2.2 and PREDICT v2.3 in women with complete information on tumor ER status, size, grade, . Using the script, we generated results for Supplementary Table 3 - 4.
+
+# Load the libraries
+```{r load the libraries, message=FALSE}
+library("readxl")
+library("readr")
+library("dplyr")
+library("plyr")
+library("rms")
+library("ggplot2")
+library("timeROC")
+library("stringr")
+library("tidyverse")
+
+```
+
+# Load the complete dataset
+```{r load the PARADIGM data set, include=FALSE}
+TNBC <- read.csv(file='/DATA/users/yu.wang/8_PREDICT/PREDICT_PARADIGM_project/1_Data/TNBC485_BRCA1statusupdate_in_August_2022.csv',stringsAsFactors=F,header=T,sep = ",") %>%
+  filter(T_LEEFT >= 25 & ER.num == 0 & PR.num == 0) 
+gBRCAmnr <- TNBC$palga_nr[which(TNBC$gBRCA1 == 1 | TNBC$BRCA2 == "gBRCA2m")]
+gBRCAwtnr<- TNBC$palga_nr[which(TNBC$gBRCA1 == 0 & TNBC$BRCA2 %in% c("sBRCA2m", "BRCA2wt"))]
+
+PRD <- read.csv("/DATA/users/yu.wang/8_PREDICT/PREDICT_PARADIGM_project/1_Data/nbcp1.csv",stringsAsFactors=F,header=T,sep = ",") %>%
+    dplyr::select(-X) %>%
+    mutate(incyear = incdat,
+           age.start = T_LEEFT,
+           er = factor(ifelse(ER.num == 0, 0, 
+                          ifelse(ER.num > 0, 1, NA))),
+           pr = factor(ifelse(PR.num == 0, 0, 
+                            ifelse(PR.num > 0, 1, NA))),
+           her2 = factor(ifelse(HER2.cat == "Negative", 0,
+                         ifelse(HER2.cat == "Positive", 1, NA))),
+           size = tumorsize,
+           grade = factor(ifelse(Grade == "Grade 1", 1,
+                          ifelse(Grade == "Grade 2", 2,
+                                 ifelse(Grade == "Grade 3", 3, NA)))),
+           ki67 = 9,
+           screen = 0,
+           nodes = 0,
+           gBRCA12 = ifelse(palga_nr %in% gBRCAmnr, 1,
+                            ifelse(palga_nr %in% gBRCAwtnr, 0, NA)),
+           
+           Radiotherapy = factor(ifelse(is.na(Radiotherapy), "No", Radiotherapy)),
+           Surgery.cat3 = factor(ifelse(str_detect(Surgery, "lumpectomy"), "Lumpectomy",
+                                 ifelse(str_detect(Surgery, "mastectomy"), "Mastectomy", "Surgery NNO"))),
+           Surgery = factor(Surgery),
+           
+           delta = ifelse(fustat.final == "overleden 1", 1, 0),
+           timeyr = VITFUP.final/365.25,
+           intrsub = ifelse((er == 1| pr == 1) & her2 == 0, "HRposHER2neg",
+                              ifelse((er == 1| pr == 1) & her2 == 1, "HRposHER2pos",
+                                     ifelse(er == 0 & pr == 0 & her2 == 1, "HRnegHER2pos",
+                                            ifelse(er == 0 & pr == 0 & her2 == 0, "HRnegHER2neg", NA))))) %>%
+  separate(incyear, c("incyear", "incmonth"), "-", extra = "merge", fill = "right")
+
+```
+
+```{r load the complete dataset}
+comp_df <- PRD %>%
+  filter(age.start >= 25) %>%
+  dplyr::select(palga_nr, age.start, screen, size, grade, nodes, er, pr, her2, ki67, delta, timeyr, gBRCA12, intrsub) %>%
+  .[complete.cases(.$palga_nr, .$age.start, .$screen, .$size, .$grade, .$nodes, .$er, .$pr, .$her2, .$ki67, .$delta, .$timeyr),]
+
+```
+
+# Load functions
+```{r functions for validation}
+validity_Fun <- function(data, time, status, predmort, tmax) {
+      nwomen <- dim(data)[1]
+      ntime <- length(tmax)
+      res_validity <- c(nwomen)
+      for (i in 1:ntime){
+        
+        surv_fit <- survfit(Surv(data[, time], data[, status]) ~ 1)
+        
+        #calculate the OE ratio
+        obs_risk <- 1 - summary(surv_fit, times = tmax[i])$surv
+        obs_se <- summary(surv_fit, times = tmax[i])$std.err
+        nevent <- summary(surv_fit, times = tmax[i])$n.event
+        exp_risk <- mean(data[, predmort[i]])
+        
+
+        OE_stats <- obs_risk / exp_risk
+        se_OE_stats <- obs_se / exp_risk
+        lowerCI_OE_stats <- round(OE_stats - qnorm(1 - 0.05/2) * se_OE_stats, 2)
+        upperCI_OE_stats <- round(OE_stats + qnorm(1 - 0.05/2) * se_OE_stats, 2)
+        
+        res_OE <- paste0(round(OE_stats, 2), " (", lowerCI_OE_stats, "-", upperCI_OE_stats, ")")
+        
+        
+        #calculate the AUC
+        AUC <- timeROC(T = data[, time], delta = data[, status],
+                       marker = data[, predmort[i]], 
+                       weighting = "marginal", 
+                       times = tmax[i], cause = 1, ROC = F, iid = T)
+        AUC_stats <- AUC$AUC[2]
+        se_AUC_stats <- AUC$inference$vect_sd_1 [2]
+        lowerCI_AUC_stats <- round(AUC_stats - qnorm(1 - 0.05/2) * se_AUC_stats, 2)
+        upperCI_AUC_stats <- round(AUC_stats + qnorm(1 - 0.05/2) * se_AUC_stats, 2)
+        
+        res_AUC <- paste0(round(AUC_stats, 2), " (", lowerCI_AUC_stats, "-", upperCI_AUC_stats, ")")
+        
+        
+        res_validity <- append(res_validity, c(nevent, res_OE, res_AUC))
+
+      }
+      return(res_validity)
+}
+```
+
+```{r calidata function}
+caliplot_df <- function(data, time, status, predmort, tmax) {
+
+    q5 <- cut(data[, predmort],
+              breaks = quantile(data[, predmort], probs = seq(0, 1, 0.20)), include.lowest = TRUE)
+    
+    data$risk_q5 <- factor(q5, levels = levels(q5), labels = c('q1', 'q2', 'q3', 'q4', "q5"))
+    
+    exp_risk <- tapply(data[, predmort], data[, "risk_q5"], mean)
+    
+    surv_fit <- survfit(Surv(data[, time], data[, status]) ~ data[, "risk_q5"])
+    
+    obs_risk <- 1 - summary(surv_fit ,times = tmax)$surv
+    obs_se <- summary(surv_fit ,times = tmax)$std.err
+    
+    obs_lower <- obs_risk - qnorm(1 - 0.05/2) * obs_se
+    obs_upper <- obs_risk + qnorm(1 - 0.05/2) * obs_se
+      
+    
+    caliplot_data <- cbind(obs_risk, obs_lower, obs_upper, exp_risk) %>%
+      as.data.frame(.)
+    names(caliplot_data) <- c("obs.y", "obs.lower", "obs.upper", "exp.x")
+    
+    return(caliplot_data)
+}
+
+```
+
+# Run the script
+## PREDICT V2.2
+Note that PREDICTv2.2 published on https://github.com/gmp26/v22/blob/master/R/v22_model.R was slightly different.
+  1. PREDICTv2.2 allows missing values in grade (if missing, impute missingness with 2.13) and screening (if missing, impute missingness with 0.204). In my script, grade is not allowed to be missing, the same as the PREDICT published on their website. For screening, we expect very few women in our cohort who would undergo screening, as they were all under 40 years at diagnosis. Screening for BRCA1/2 carriers was not yet inplemented before 2000.
+  2. PREDICTv2.2 on the github added several codes about radiotherapy. However, these codes are currently disabled thus not being used right now.
+  3. PREDICTv2.2 on the github included systemic treatment. I deleted these part because all women in our cohort were adjuvant treatment-naive.
+```{r Run the datasest in the PREDICTv22 script}
+for (n in 1:nrow(comp_df)) {
+  # Input case characteristics
+  age.start  <- comp_df$age.start[n]
+  screen     <- comp_df$screen[n]     # Clinically detected = 0, screen detected = 1
+  size       <- comp_df$size[n]   # Tumour size mm
+  grade      <- comp_df$grade[n]     # Tumour grade
+  nodes      <- comp_df$nodes[n]     # Number positive nodes. Nodal micrometastases = 0.5
+  er         <- comp_df$er[n]     # ER+ = 1, ER- = 0
+  her2       <- comp_df$her2[n]     # HER2+ = 1, HER2- = 0, missing = 9
+  ki67       <- comp_df$ki67[n]     # KI67+ = 1, KI67- = 0, missing = 9
+
+  # Grade variable for ER neg
+  grade.val <- ifelse(er==1, grade, ifelse(grade==1, 0, 1))
+
+  # Generate the coefficients
+  age.mfp.1   <- ifelse(er==1, (age.start/10)^-2-.0287449295, age.start-56.3254902)
+  age.beta.1  <- ifelse(er==1, 34.53642, 0.0089827)
+  age.mfp.2   <- ifelse(er==1, (age.start/10)^-2*log(age.start/10)-.0510121013, 0)
+  age.beta.2  <- ifelse(er==1, -34.20342, 0)
+  size.mfp    <- ifelse(er==1, log(size/100)+1.545233938, (size/100)^.5-.5090456276)
+  size.beta   <- ifelse(er==1, 0.7530729, 2.093446)
+  nodes.mfp   <- ifelse(er==1,log((nodes+1)/10)+1.387566896,
+                        log((nodes+1)/10)+1.086916249)
+  nodes.beta  <- ifelse(er==1, 0.7060723, .6260541)
+  grade.beta  <- ifelse(er==1, 0.746655, 1.129091)
+  screen.beta <- ifelse(er==1, -0.22763366, 0)
+  her2.beta   <- ifelse(her2==1, 0.2413,
+                        ifelse(her2==0, -0.0762, 0))
+  ki67.beta   <- ifelse(ki67==1 & er==1, 0.14904,
+                        ifelse(ki67==0 & er==1, -0.1133, 0))
+
+  # Calculate the other and breast mortality indicies
+
+  # Other mortality prognostic index (mi)
+  mi <- 0.0698252*((age.start/10)^2-34.23391957)
+
+  # Breast cancer mortality prognostic index (pi)
+  pi <- age.beta.1*age.mfp.1 + age.beta.2*age.mfp.2 + size.beta*size.mfp +
+    nodes.beta*nodes.mfp + grade.beta*grade.val + screen.beta*screen +
+    her2.beta + ki67.beta
+
+  # Non breast cancer mortality
+  # Generate cumulative baseline other mortality
+
+  time<-c(5,10,15)
+
+  base.m.cum.oth <- exp(-6.052919 + (1.079863*log(time)) + (.3255321*time^.5))
+
+
+  # Generate cumulative survival non-breast mortality
+  #YW: cumulative non-breast cancer survival
+  s.cum.oth <- exp(-exp(mi)*base.m.cum.oth)
+
+  # Generate annual survival from cumulative survival
+  #YW: cumulative non-breast cancer mortality
+  m.cum.oth <- 1 - s.cum.oth
+
+  # Breast cancer specific mortality
+  # Generate cumulative baseline breast mortality
+  if (er==1) {
+    base.m.cum.br <- exp(0.7424402 - 7.527762/time^.5 - 1.812513*log(time)/time^.5)
+  } else { base.m.cum.br <- exp(-1.156036 + 0.4707332/time^2 - 3.51355/time)
+  }
+  # Calculate the cumulative breast cancer survival
+  s.cum.br <- exp(-exp(pi)*base.m.cum.br)
+  m.cum.br <- 1 - s.cum.br
+
+  # All cause mortality
+  m.cum.all <- 1 - s.cum.oth*s.cum.br
+  s.cum.all <- 100-100*m.cum.all
+
+  # Proportion of all cause mortality that is breast cancer
+  prop.br <- m.cum.br/(m.cum.br+m.cum.oth)
+  prop.oth <- m.cum.oth/(m.cum.br+m.cum.oth)
+  # Predicted cumulative breast specific mortality
+  pred.m.br    <- prop.br*m.cum.all
+  # Predicted cumulative non-breast cancer mortality
+  pred.m.oth <- prop.oth*m.cum.all
+  # Predicted cumulative all-cause mortality
+  pred.all <- pred.m.br + pred.m.oth #pred.all=m.cum.all
+
+  # Predicted all cause mortality
+  comp_df$v22_all5[n] <- pred.all[1]
+  comp_df$v22_all10[n] <- pred.all[2]
+  comp_df$v22_all15[n] <- pred.all[3]
+
+
+  #prognostic index, this is not related to time
+  comp_df$v22_pi[n] <- pi #larger pi is associated with higher risks of events
+
+}
+```
+## PREDICT V2.3
+PREDICT v2.3 was not yet published. The information on the predictor PR was derived from the manuscript from Grootes et al. 2022.
+```{r Run the datasest in the PREDICTv223 script}
+for (n in 1:nrow(comp_df)) {
+  # Input case characteristics
+  age.start  <- comp_df$age.start[n]
+  screen     <- comp_df$screen[n]     # Clinically detected = 0, screen detected = 1
+  size       <- comp_df$size[n]   # Tumour size mm
+  grade      <- comp_df$grade[n]     # Tumour grade
+  nodes      <- comp_df$nodes[n]     # Number positive nodes. Nodal micrometastases = 0.5
+  er         <- comp_df$er[n]     # ER+ = 1, ER- = 0
+  her2       <- comp_df$her2[n]     # HER2+ = 1, HER2- = 0, missing = 9
+  ki67       <- comp_df$ki67[n]     # KI67+ = 1, KI67- = 0, missing = 9
+  pr       <- comp_df$pr[n]
+  # Grade variable for ER neg
+  grade.val <- ifelse(er==1, grade, ifelse(grade==1, 0, 1))
+
+  # Generate the coefficients
+  age.mfp.1   <- ifelse(er==1, (age.start/10)^-2-.0287449295, age.start-56.3254902)
+  age.beta.1  <- ifelse(er==1, 34.53642, 0.0089827)
+  age.mfp.2   <- ifelse(er==1, (age.start/10)^-2*log(age.start/10)-.0510121013, 0)
+  age.beta.2  <- ifelse(er==1, -34.20342, 0)
+  size.mfp    <- ifelse(er==1, log(size/100)+1.545233938, (size/100)^.5-.5090456276)
+  size.beta   <- ifelse(er==1, 0.7530729, 2.093446)
+  nodes.mfp   <- ifelse(er==1,log((nodes+1)/10)+1.387566896,
+                        log((nodes+1)/10)+1.086916249)
+  nodes.beta  <- ifelse(er==1, 0.7060723, .6260541)
+  grade.beta  <- ifelse(er==1, 0.746655, 1.129091)
+  screen.beta <- ifelse(er==1, -0.22763366, 0)
+  her2.beta   <- ifelse(her2==1, 0.2413,
+                        ifelse(her2==0, -0.0762, 0))
+  ki67.beta   <- ifelse(ki67==1 & er==1, 0.14904,
+                        ifelse(ki67==0 & er==1, -0.1133, 0))
+  pr.beta     <- ifelse(pr == 1 & er == 1, -0.0618754,
+                      ifelse(pr == 0 & er == 1, 0.2623643,
+                             ifelse(pr == 1 & er == 0, -0.2231436, 0.0295588)))
+
+  # Calculate the other and breast mortality indicies
+
+  # Other mortality prognostic index (mi)
+  mi <- 0.0698252*((age.start/10)^2-34.23391957)
+
+  # Breast cancer mortality prognostic index (pi)
+  pi <- age.beta.1*age.mfp.1 + age.beta.2*age.mfp.2 + size.beta*size.mfp +
+    nodes.beta*nodes.mfp + grade.beta*grade.val + screen.beta*screen +
+    her2.beta + ki67.beta + pr.beta
+
+  # Non breast cancer mortality
+  # Generate cumulative baseline other mortality
+
+  time<-c(5,10,15)
+
+  base.m.cum.oth <- exp(-6.052919 + (1.079863*log(time)) + (.3255321*time^.5))
+
+
+  # Generate cumulative survival non-breast mortality
+  #YW: cumulative non-breast cancer survival
+  s.cum.oth <- exp(-exp(mi)*base.m.cum.oth)
+
+  # Generate annual survival from cumulative survival
+  #YW: cumulative non-breast cancer mortality
+  m.cum.oth <- 1 - s.cum.oth
+
+  # Breast cancer specific mortality
+  # Generate cumulative baseline breast mortality
+  if (er==1) {
+    base.m.cum.br <- exp(0.7424402 - 7.527762/time^.5 - 1.812513*log(time)/time^.5)
+  } else { base.m.cum.br <- exp(-1.156036 + 0.4707332/time^2 - 3.51355/time)
+  }
+  # Calculate the cumulative breast cancer survival
+  s.cum.br <- exp(-exp(pi)*base.m.cum.br)
+  m.cum.br <- 1 - s.cum.br
+
+  # All cause mortality
+  m.cum.all <- 1 - s.cum.oth*s.cum.br
+  s.cum.all <- 100-100*m.cum.all
+
+  # Proportion of all cause mortality that is breast cancer
+  prop.br <- m.cum.br/(m.cum.br+m.cum.oth)
+  prop.oth <- m.cum.oth/(m.cum.br+m.cum.oth)
+  # Predicted cumulative breast specific mortality
+  pred.m.br    <- prop.br*m.cum.all
+  # Predicted cumulative non-breast cancer mortality
+  pred.m.oth <- prop.oth*m.cum.all
+  # Predicted cumulative all-cause mortality
+  pred.all <- pred.m.br + pred.m.oth #pred.all=m.cum.all
+
+  # Predicted all cause mortality
+  comp_df$v23_all5[n] <- pred.all[1]
+  comp_df$v23_all10[n] <- pred.all[2]
+  comp_df$v23_all15[n] <- pred.all[3]
+
+
+  #prognostic index, this is not related to time
+  comp_df$v23_pi[n] <- pi #larger pi is associated with higher risks of events
+
+}
+```
+
+
+# Calibration and discrimination
+## PREDICT V2.2
+```{r validity v22}
+res_v22_all <- validity_Fun(data = comp_df, time = "timeyr", status = "delta", 
+                         predmort = c("v22_all5", "v22_all10", "v22_all15"), tmax = c(5, 10, 15))
+
+res_v22_ERpos <- validity_Fun(data = filter(comp_df, comp_df$er == 1), time = "timeyr", status = "delta", 
+                         predmort = c("v22_all5", "v22_all10", "v22_all15"), tmax = c(5, 10, 15))
+
+res_v22_ERneg <- validity_Fun(data = filter(comp_df, comp_df$er == 0), time = "timeyr", status = "delta", 
+                         predmort = c("v22_all5", "v22_all10", "v22_all15"), tmax = c(5, 10, 15))
+
+res_v22_HRposHER2neg <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRposHER2neg"), time = "timeyr", 
+                                  status = "delta", predmort = c("v22_all5", "v22_all10", "v22_all15"), tmax = c(5, 10, 15))
+res_v22_HRposHER2pos <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRposHER2pos"), time = "timeyr", 
+                                  status = "delta", predmort = c("v22_all5", "v22_all10", "v22_all15"), tmax = c(5, 10, 15))
+res_v22_HRnegHER2pos <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRnegHER2pos"), time = "timeyr", 
+                                  status = "delta", predmort = c("v22_all5", "v22_all10", "v22_all15"), tmax = c(5, 10, 15))
+res_v22_HRnegHER2neg <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRnegHER2neg"), time = "timeyr", 
+                                  status = "delta", predmort = c("v22_all5", "v22_all10", "v22_all15"), tmax = c(5, 10, 15))
+
+
+res_v22_HRnegHER2neg_gBRCA12m <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRnegHER2neg" & comp_df$gBRCA12 == 1), time = "timeyr", 
+                                  status = "delta", predmort = c("v22_all5", "v22_all10", "v22_all15"), tmax = c(5, 10, 15))
+
+res_v22_HRnegHER2neg_gBRCA12wt <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRnegHER2neg" & comp_df$gBRCA12 == 0), time = "timeyr", 
+                                  status = "delta", predmort = c("v22_all5", "v22_all10", "v22_all15"), tmax = c(5, 10, 15))
+
+
+
+res_v22 <- matrix(c(res_v22_all, res_v22_ERpos, res_v22_ERneg, res_v22_HRposHER2neg, res_v22_HRposHER2pos,
+                    res_v22_HRnegHER2pos, res_v22_HRnegHER2neg, res_v22_HRnegHER2neg_gBRCA12m, res_v22_HRnegHER2neg_gBRCA12wt),
+                      nrow = 9, byrow = T,
+                      dimnames = list(c("All women", "ER-positive", "ER-negative", "HRposHER2neg", "HRposHER2pos", 
+                                        "HRnegHER2pos", "HRnegHER2neg","gBRCA12m", "gBRCA12wt"), 
+                                      c("No. women", "event_5","OE_5", "AUC_5", "event_10","OE_10", "AUC_10",
+                                        "event_15","OE_15", "AUC_15"))) %>%
+  as.data.frame(.)
+
+res_v22
+```
+
+## PREDICT V2.3
+```{r validity v23}
+res_v23_all <- validity_Fun(data = comp_df, time = "timeyr", status = "delta", 
+                         predmort = c("v23_all5", "v23_all10", "v23_all15"), tmax = c(5, 10, 15))
+
+res_v23_ERpos <- validity_Fun(data = filter(comp_df, comp_df$er == 1), time = "timeyr", status = "delta", 
+                         predmort = c("v23_all5", "v23_all10", "v23_all15"), tmax = c(5, 10, 15))
+
+res_v23_ERneg <- validity_Fun(data = filter(comp_df, comp_df$er == 0), time = "timeyr", status = "delta", 
+                         predmort = c("v23_all5", "v23_all10", "v23_all15"), tmax = c(5, 10, 15))
+
+res_v23_HRposHER2neg <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRposHER2neg"), time = "timeyr", 
+                                  status = "delta", predmort = c("v23_all5", "v23_all10", "v23_all15"), tmax = c(5, 10, 15))
+res_v23_HRposHER2pos <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRposHER2pos"), time = "timeyr", 
+                                  status = "delta", predmort = c("v23_all5", "v23_all10", "v23_all15"), tmax = c(5, 10, 15))
+res_v23_HRnegHER2pos <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRnegHER2pos"), time = "timeyr", 
+                                  status = "delta", predmort = c("v23_all5", "v23_all10", "v23_all15"), tmax = c(5, 10, 15))
+res_v23_HRnegHER2neg <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRnegHER2neg"), time = "timeyr", 
+                                  status = "delta", predmort = c("v23_all5", "v23_all10", "v23_all15"), tmax = c(5, 10, 15))
+
+
+res_v23_HRnegHER2neg_gBRCA12m <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRnegHER2neg" & comp_df$gBRCA12 == 1), time = "timeyr", 
+                                  status = "delta", predmort = c("v23_all5", "v23_all10", "v23_all15"), tmax = c(5, 10, 15))
+
+res_v23_HRnegHER2neg_gBRCA12wt <- validity_Fun(data = filter(comp_df, comp_df$intrsub == "HRnegHER2neg" & comp_df$gBRCA12 == 0), time = "timeyr", 
+                                  status = "delta", predmort = c("v23_all5", "v23_all10", "v23_all15"), tmax = c(5, 10, 15))
+
+
+
+res_v23 <- matrix(c(res_v23_all, res_v23_ERpos, res_v23_ERneg, res_v23_HRposHER2neg, res_v23_HRposHER2pos,
+                    res_v23_HRnegHER2pos, res_v23_HRnegHER2neg, res_v23_HRnegHER2neg_gBRCA12m, res_v23_HRnegHER2neg_gBRCA12wt),
+                      nrow = 9, byrow = T,
+                      dimnames = list(c("All women", "ER-positive", "ER-negative", "HRposHER2neg", "HRposHER2pos", 
+                                        "HRnegHER2pos", "HRnegHER2neg","gBRCA12m", "gBRCA12wt"), 
+                                      c("No. women", "event_5","OE_5", "AUC_5", "event_10","OE_10", "AUC_10",
+                                        "event_15","OE_15", "AUC_15"))) %>%
+  as.data.frame(.)
+
+res_v23
+```
+
+
+
+
+# Calibration plot
+```{r cali plot}
+calplot10_df_v22_all <- caliplot_df(data = comp_df, time= "timeyr", status = "delta", predmort = "v22_all10", tmax = 10)
+calplot10_df_v22_ERpos <- caliplot_df(data = filter(comp_df, comp_df$er == 1), 
+                                   time= "timeyr", status = "delta", predmort = "v22_all10", tmax = 10)
+calplot10_df_v22_ERneg <- caliplot_df(data = filter(comp_df, comp_df$er == 0), 
+                                   time= "timeyr", status = "delta", predmort = "v22_all10", tmax = 10)
+```
+## All women
+```{r calibration all women, fig.width=12, fig.height=12}
+caliplot_v22_all <-
+  ggplot(calplot10_df_v22_all, aes(x = exp.x, y = obs.y)) +
+  geom_point(color = "black", size = 3, shape = 15) +
+  geom_line(color = "black", size = 1) +
+  #abline! I used geomline instead of abline because I could specify the length of the abline
+  geom_line(data = data.frame(x = c(0, 0.42), y = c(0, 0.42)), 
+            aes(x, y), color = "black", linetype = "dashed") +
+  geom_errorbar(aes(ymin = obs.lower, ymax = obs.upper),
+                width = 0.02, color = "black", size = 0.7) +
+  #geom_vline(xintercept = 0.12, color = "red", linetype = "dashed") + 
+  xlim(0, 0.42) + ylim(0, 0.42) +
+  xlab("Predicted 10-year all-cause mortality") +
+  ylab("Observed 10-year all-cause mortality") +
+  ggtitle("A. Calibration plot in all women") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1.5, size = 20), 
+        text = element_text(family = "Arial"),
+        panel.background = element_rect(fill = "white"),
+        axis.title = element_text(size = 16),
+        axis.line = element_line(color = "black", linewidth = 0.8),
+        axis.text = element_text(size = 12)) 
+caliplot_v22_all
+```
+## Women with ER-positive tumors
+```{r calibration ERpos, fig.width=12, fig.height=12}
+caliplot_v22_ERpos <-
+  ggplot(calplot10_df_v22_ERpos, aes(x = exp.x, y = obs.y)) +
+  geom_point(color = "black", size = 3, shape = 15) +
+  geom_line(color = "black", size = 1) +
+  #abline! I used geomline instead of abline because I could specify the length of the abline
+  geom_line(data = data.frame(x = c(0, 0.42), y = c(0, 0.42)), 
+            aes(x, y), color = "black", linetype = "dashed") +
+  geom_errorbar(aes(ymin = obs.lower, ymax = obs.upper),
+                width = 0.02, color = "black", size = 0.7) +
+  #geom_vline(xintercept = 0.12, color = "red", linetype = "dashed") + 
+  xlim(0, 0.42) + ylim(0, 0.42) +
+  xlab("Predicted 10-year all-cause mortality") +
+  ylab("Observed 10-year all-cause mortality") +
+  ggtitle("B. Calibration plot in women with ER-positive tumors") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1.5, size = 20), 
+        text = element_text(family = "Arial"),
+        panel.background = element_rect(fill = "white"),
+        axis.title = element_text(size = 16),
+        axis.line = element_line(color = "black", linewidth = 0.8),
+        axis.text = element_text(size = 12)) 
+caliplot_v22_ERpos
+```
+
+## Women with ER-negative tumors
+```{r calibration ERneg, fig.width=12, fig.height=12}
+caliplot_v22_ERneg <-
+  ggplot(calplot10_df_v22_ERneg, aes(x = exp.x, y = obs.y)) +
+  geom_point(color = "black", size = 3, shape = 15) +
+  geom_line(color = "black", size = 1) +
+  #abline! I used geomline instead of abline because I could specify the length of the abline
+  geom_line(data = data.frame(x = c(0, 0.42), y = c(0, 0.42)), 
+            aes(x, y), color = "black", linetype = "dashed") +
+  geom_errorbar(aes(ymin = obs.lower, ymax = obs.upper),
+                width = 0.02, color = "black", size = 0.7) +
+  #geom_vline(xintercept = 0.12, color = "red", linetype = "dashed") + 
+  xlim(0, 0.42) + ylim(0, 0.42) +
+  xlab("Predicted 10-year all-cause mortality") +
+  ylab("Observed 10-year all-cause mortality") +
+  ggtitle("C. Calibration plot in womwn with ER-negative tumors") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1.5, size = 20), 
+        text = element_text(family = "Arial"),
+        panel.background = element_rect(fill = "white"),
+        axis.title = element_text(size = 16),
+        axis.line = element_line(color = "black", linewidth = 0.8),
+        axis.text = element_text(size = 12)) 
+caliplot_v22_ERneg
+```
+
+
+# Session information
+```{r sinfo}
+sessionInfo()
+```
+

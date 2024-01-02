@@ -1,0 +1,339 @@
+---
+title: "PREDICT_PARADIGM: Clinical Utility of PREDICT v2.2 and v2.3"
+author: "Yuwei Wang"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: yes
+    toc_float: yes
+    toc_collapsed: yes
+  toc_depth: 3
+  word_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# READ ME
+The R script is designed for our manuscript entitled the external validation and clinical utility assessment of PREDICT breast cancer prognostic model in young women with node-negative breast cancer. This R script assessed the potential clinical utility of PREDICT v2.2 and PREDICT v2.3. Using the script, we generated results for Table 4 and Supplementary Table 5.
+
+# Load the libraries
+```{r load the libraries, message=FALSE, warning=FALSE}
+library(readxl)
+library(readr)
+library(dplyr)
+library(plyr)
+library(rms)
+library(ggplot2)
+library(survminer)
+library(survival)
+```
+
+# Load the imputed datasets
+```{r load imputed data, include=F}
+dataimpute_v22 <- read.csv(file='/DATA/users/yu.wang/8_PREDICT/PREDICT_PARADIGM_project/1_Data/dataimpute_v22_July.csv',stringsAsFactors=F,header=T,sep = ",") %>%
+  dplyr::select(-X)
+
+dataimpute_v23 <- read.csv(file='/DATA/users/yu.wang/8_PREDICT/PREDICT_PARADIGM_project/1_Data/dataimpute_v23_July.csv',stringsAsFactors=F,header=T,sep = ",") %>%
+  dplyr::select(-X)
+```
+
+```{r datasets for model v22}
+## women with ER-positive tumors
+df_v22_ERpos <- dataimpute_v22 %>%
+        filter(ER.num > 0 & T_LEEFT >= 25)
+
+## women with ER-negative tumors
+df_v22_ERneg <- dataimpute_v22 %>%
+        filter(ER.num == 0 & T_LEEFT >= 25)
+```
+
+```{r datasets for model v23}
+## women with ER-positive tumors
+df_v23_ERpos <- dataimpute_v23 %>%
+        filter(ER.num > 0 & T_LEEFT >= 25)
+
+## women with ER-negative tumors
+df_v23_ERneg <- dataimpute_v23 %>%
+        filter(ER.num == 0 & T_LEEFT >= 25)
+```
+
+
+# Net benefit function
+We made a function for pooling net benefits at predefined thresholds in each imputed dataset.
+```{r model for net benefit, warning=FALSE}
+NBFun <- function (model, imputedata, nimp, impvar, thresholdrange, predrisk, time, status, tmax, totalnumber){
+
+  if(model == "Chemotherapy-to-all") {
+    
+    pool_res_allthreshold <- matrix(NA, length(thresholdrange), 3)
+    
+        for (q in thresholdrange){
+          
+          weight <- q/(1 - q)
+          
+          res_in_each_impute <- matrix(NA, nimp, 3)
+          
+          for (i in 1:nimp){
+      
+            df <- imputedata[imputedata[impvar] == i,]
+            
+            df_predpos <- df
+            #all are "positive" since this is treatment for all
+            surv_fit_pos <- survfit(Surv(df_predpos[, time], df_predpos[, status]) ~ 1)
+            TP <- 1 - summary(surv_fit_pos, times = tmax)$surv
+            TPrate <- TP * nrow(df_predpos)/nrow(df_predpos)
+                            
+            FP <- summary(surv_fit_pos, times = tmax)$surv
+            FPrate <- FP * nrow(df_predpos)/nrow(df_predpos)
+            
+            NB <- TPrate - weight * FPrate
+            
+            res_in_each_impute[i, ] <- c(TPrate, FPrate, NB)
+          
+          }
+          
+      pool_res <- round(colMeans(res_in_each_impute) * totalnumber, 0)
+      
+      q_loc <- which(thresholdrange == q)
+      pool_res_allthreshold[q_loc , ] <- pool_res
+        }
+      
+    res <- cbind(c(thresholdrange), pool_res_allthreshold)
+    
+    colnames(res) <- c(paste0(model, "_threshold"), paste0(model, "_TP"), 
+                       paste0(model, "_FP"), paste0(model, "_NB"))
+    
+    return(res)
+
+  }
+  
+  if(model != "Chemotherapy-to-all") {
+        
+    pool_res_allthreshold <- matrix(NA, length(thresholdrange), 5)  
+    
+        for (q in thresholdrange){
+          
+          weight <- q/(1 - q)
+          
+          res_in_each_impute <- matrix(NA, nimp, 5) 
+          
+          for (i in 1:nimp){
+      
+          df <- imputedata[imputedata[impvar] == i,]
+          
+          df_predpos <- df[df[predrisk] >= q, ]
+          
+          if(dim(df_predpos)[1] > 0){
+            
+              surv_fit_pos <- survfit(Surv(df_predpos[, time], df_predpos[, status]) ~ 1)
+              TP <- 1 - summary(surv_fit_pos, times = tmax)$surv
+              TPrate <- TP * nrow(df_predpos)/nrow(df)
+                              
+              FP <- summary(surv_fit_pos, times = tmax)$surv
+              FPrate <- FP * nrow(df_predpos)/nrow(df)
+          
+          } else{
+            
+            TPrate = 0
+            FPrate = 0
+          }
+          
+          df_predneg <- df[df[predrisk] < q, ]
+          
+          if(dim(df_predneg)[1] > 0){
+          
+            surv_fit_neg <- survfit(Surv(df_predneg[, time], df_predneg[, status]) ~ 1)
+            FN <- 1 - summary(surv_fit_neg, times = tmax)$surv
+            FNrate <- FN * nrow(df_predneg)/nrow(df)
+    
+            TN <- summary(surv_fit_neg, times = tmax)$surv
+            TNrate <- TN * nrow(df_predneg)/nrow(df)
+          } else{
+            
+            TNrate = 0
+            FNrate = 0        
+          }   
+          
+          NB <- TPrate - weight * FPrate
+          
+          res_in_each_impute[i, ] <- c(TPrate, FPrate, NB, FNrate, TNrate)
+          
+          }
+      pool_res <- round(colMeans(res_in_each_impute) * totalnumber, 0)
+      
+      q_loc <- which(thresholdrange == q)
+      pool_res_allthreshold[q_loc , ] <- pool_res
+        }
+    
+    res <- cbind(c(thresholdrange), pool_res_allthreshold)
+    
+    colnames(res) <- c(paste0(model, "_threshold"), paste0(model, "_TP"), paste0(model, "_FP"), 
+                       paste0(model, "_NB"), paste0(model, "_FN"), paste0(model, "_TN"))
+    
+    return(res)
+
+  }
+}
+```
+
+# Net benefits of PREDICT v2.2, v2.3, and chemotherapy-to-all
+
+## Threshold
+```{r}
+threshold <- seq(0.05, 0.15, by = 0.005)
+```
+
+## PREDICT v2.2
+```{r v22}
+res.ERpos_v22 <- NBFun(model = "PREDICTv22", imputedata = df_v22_ERpos, nimp = 50, 
+                impvar = ".imp", thresholdrange = threshold, predrisk = "all10", 
+                time = "timeyr", status = "delta", tmax = 10, totalnumber = 1000)
+res.ERpos_v22
+
+res.ERneg_v22 <- NBFun(model = "PREDICTv22", imputedata = df_v22_ERneg, nimp = 50, 
+                impvar = ".imp", thresholdrange = threshold, predrisk = "all10", 
+                time = "timeyr", status = "delta", tmax = 10, totalnumber = 1000)
+res.ERneg_v22
+```
+
+## PREDICT v2.3
+```{r v23}
+res.ERpos_v23 <- NBFun(model = "PREDICTv23", imputedata = df_v23_ERpos, nimp = 50, 
+                impvar = ".imp", thresholdrange = threshold, predrisk = "all10", 
+                time = "timeyr", status = "delta", tmax = 10, totalnumber = 1000)
+res.ERpos_v23
+
+res.ERneg_v23 <- NBFun(model = "PREDICTv23", imputedata = df_v23_ERneg, nimp = 50, 
+                impvar = ".imp", thresholdrange = threshold, predrisk = "all10", 
+                time = "timeyr", status = "delta", tmax = 10, totalnumber = 1000)
+res.ERneg_v23
+```
+
+## Chemotherapy-to-all
+To compute net benefits for chemotherapy-to-all strategy, it doesn't matter if we use df_v22 or df_v23. This is because chemotherapy-to-all classify all patients as high-risk, and the only difference between df_v22 and df_v23 are the predicted risks.
+```{r chemotoall}
+res.ERpos_chemotoall <- NBFun(model = "Chemotherapy-to-all", imputedata = df_v22_ERpos, nimp = 50, 
+                impvar = ".imp", thresholdrange = threshold, predrisk = "all10", 
+                time = "timeyr", status = "delta", tmax = 10, totalnumber = 1000)
+res.ERpos_chemotoall
+
+res.ERneg_chemotoall <- NBFun(model = "Chemotherapy-to-all", imputedata = df_v22_ERneg, nimp = 50, 
+                impvar = ".imp", thresholdrange = threshold, predrisk = "all10", 
+                time = "timeyr", status = "delta", tmax = 10, totalnumber = 1000)
+res.ERneg_chemotoall
+```
+
+# Results
+## Results for Supplementary Table 5
+```{r results ST5}
+res.ERpos <- cbind(res.ERpos_v22, res.ERpos_v23, res.ERpos_chemotoall)
+res.ERneg <- cbind(res.ERneg_v22, res.ERneg_v23, res.ERneg_chemotoall)
+
+stable5.ERpos <- res.ERpos[seq(1, 21, by = 2), c(1:6, 8:12, 14:16)] %>% as_tibble(.)
+stable5.ERpos$diff_v22 <- stable5.ERpos$PREDICTv22_NB - stable5.ERpos$`Chemotherapy-to-all_NB`
+stable5.ERpos$diff_v23 <- stable5.ERpos$PREDICTv23_NB - stable5.ERpos$`Chemotherapy-to-all_NB`
+
+stable5.ERneg <- res.ERneg[seq(1, 21, by = 2), c(1:6, 8:12, 14:16)] %>% as_tibble(.)
+stable5.ERneg$diff_v22 <- stable5.ERneg$PREDICTv22_NB - stable5.ERneg$`Chemotherapy-to-all_NB`
+stable5.ERneg$diff_v23 <- stable5.ERneg$PREDICTv23_NB - stable5.ERneg$`Chemotherapy-to-all_NB`
+
+stable5.ERpos
+stable5.ERneg
+```
+
+## Make the decision curve plots
+
+```{r DCA plot dataset}
+df.colname <- c("threshold", "treatall_NB", "PREDICTv22_NB", "PREDICTv23_NB")
+
+df.plot.pos <- cbind(res.ERpos_chemotoall[, c("Chemotherapy-to-all_threshold", "Chemotherapy-to-all_NB")], 
+                    res.ERpos_v22[, "PREDICTv22_NB"], res.ERpos_v23[, "PREDICTv23_NB"]) %>%
+  as_tibble()
+
+names(df.plot.pos) <- df.colname
+
+df.plot.neg <- cbind(res.ERneg_chemotoall[, c("Chemotherapy-to-all_threshold", "Chemotherapy-to-all_NB")], 
+                    res.ERneg_v22[, "PREDICTv22_NB"], res.ERneg_v23[, "PREDICTv23_NB"])%>%
+  as_tibble()
+
+names(df.plot.neg) <- df.colname
+```
+
+```{r plot ERpos, fig.height=10, fig.width=10}
+plot.ERpos <- 
+  ggplot() +
+  geom_line(data = df.plot.pos,
+            aes(x = threshold, y = PREDICTv22_NB, color = "PREDICT v2.2"), linewidth = 1) +
+  geom_line(data = df.plot.pos, 
+            aes(x = threshold, y = PREDICTv23_NB, color = "PREDICT v2.3"), linewidth = 1) +
+  geom_line(data = df.plot.pos, 
+            aes(x = threshold, y = treatall_NB, color = "Chemotherapy-to-all"), linewidth = 1) +
+  geom_vline(xintercept = 0.12, color = "black", linetype = "dashed") +
+  # geom_vline(xintercept = 0.10, color = "black", linetype = "dotted") +
+  # geom_vline(xintercept = 0.15, color = "black", linetype = "dotted") +
+  xlim(0.05, 0.15) + ylim(65, 215) +
+  scale_x_continuous(breaks = seq(0.05, 0.15, by = 0.01)) +
+  scale_y_continuous(breaks = seq(65, 215, by = 15)) +
+  xlab("Risk Classification Threshold") +
+  ylab("Net benefit per 1000") +
+  ggtitle("A. Decision Curve Analysis in Women with ER-positive tumors") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1.5, size = 25), 
+        text = element_text(family = "Arial"),
+        panel.background = element_rect(fill = "white"),
+        axis.title = element_text(size = 22),
+        axis.text = element_text(size = 18),
+        axis.line = element_line(color = "black", linewidth = 1),
+        legend.position = c(0.82, 0.85),
+        legend.title = element_blank(),
+        legend.key.size = unit(1.5, "cm"),
+        legend.text = element_text(size = 22)) +
+  scale_color_manual(values = c("PREDICT v2.2" = "#B2182B", 
+                                "PREDICT v2.3" = "#4393C3",
+                                "Chemotherapy-to-all" = "darkgray"))
+plot.ERpos
+```
+
+```{r plot ER-neg, fig.height=10, fig.width=10}
+plot.ERneg <- 
+  ggplot() +
+  geom_line(data = df.plot.neg,
+            aes(x = threshold, y = PREDICTv22_NB, color = "PREDICT v2.2"), linewidth = 1) +
+  geom_line(data = df.plot.neg, 
+            aes(x = threshold, y = PREDICTv23_NB, color = "PREDICT v2.3"), linewidth = 1) +
+  geom_line(data = df.plot.neg, 
+            aes(x = threshold, y = treatall_NB, color = "Chemotherapy-to-all"), linewidth = 1) +
+  geom_vline(xintercept = 0.08, color = "black", linetype = "dashed") +
+  #geom_vline(xintercept = 0.07, color = "black", linetype = "dotted") +
+  #geom_vline(xintercept = 0.12, color = "black", linetype = "dotted") +
+  xlim(0.05, 0.15) + ylim(65, 215) +
+  scale_x_continuous(breaks = seq(0.05, 0.15, by = 0.01)) +
+  scale_y_continuous(breaks = seq(65, 215, by = 15)) +
+  xlab("Risk Classification Threshold") +
+  ylab("Net benefit per 1000") +
+  ggtitle("B. Decision Curve Analysis in Women with ER-negative tumors") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1.5, size = 25), 
+        text = element_text(family = "Arial"),
+        panel.background = element_rect(fill = "white"),
+        axis.title = element_text(size = 22),
+        axis.text = element_text(size = 18),
+        axis.line = element_line(color = "black", linewidth = 1),
+        legend.position = c(0.82, 0.85),
+        legend.title = element_blank(),
+        legend.key.size = unit(1.5, "cm"),
+        legend.text = element_text(size = 22)) +
+  scale_color_manual(values = c("PREDICT v2.2" = "#B2182B", 
+                                "PREDICT v2.3" = "#4393C3",
+                                "Chemotherapy-to-all" = "darkgray"))
+plot.ERneg
+```
+
+```{r plot combined}
+setwd("/DATA/users/yu.wang/8_PREDICT/PREDICT_PARADIGM_project/3_Results and plots/Plots")
+png("DCA_combined.png", width=2000, height=1000)
+plot.ERneg
+gridExtra::grid.arrange(plot.ERpos, plot.ERneg, ncol = 2)
+
+```

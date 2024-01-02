@@ -1,0 +1,192 @@
+---
+title: "PREDICT_PARADIGM: 5. Table1 Summary"
+author: "Yuwei Wang"
+date:  "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+  toc_depth: 3  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# READ ME
+The R script is designed for our manuscript entitled the external validation and clinical utility assessment of PREDICT breast cancer prognostic model in young women with node-negative breast cancer. This R script returns the calibration results we summarized in Table 1.
+
+# Load the libraries
+```{r load the libraries, message=FALSE}
+library("dplyr")
+#chi square goodness-of-fit test to compare the differences between the predicted and the observed values
+chisq.fun <- function(pred, obs){
+  t = (obs - pred)**2 / pred
+  return(1-pchisq(t, df=1))
+}
+
+
+```
+
+# Candido dos Reis
+This study reported the relative differences and the corresponding P-values. We got slightly different values than what the original study reported. This was likely due to the rounding error. We stick to the original values they reported.
+```{r candido dos reis study}
+Candido <- as.data.frame(
+  matrix(c(981, 227, 244, 981, 28, 26, 981, 255, 270, 
+           1944, 325, 331, 1944, 163, 137, 1944, 488, 468, 
+           2609, 527, 581, 2609, 17, 39, 2609, 544, 621), nrow = 9, byrow= T, 
+         dimnames = list(c("BCOS_BCSS", "BCOS_oth", "BCOS_OS", 
+                           "NTBCS_BCSS", "NTBCS_oth", "NTBCS_OS", 
+                             "POSH_BCSS","POSH_oth", "POSH_OS"), 
+                         c("totalnumber", "obsMornumber", "predMornumber"))))
+Candido <- Candido %>%
+  mutate(RDiff = round((predMornumber - obsMornumber)/predMornumber * 100, 0),
+         pvalue = round(chisq.fun(pred = predMornumber, obs = obsMornumber), 4))
+
+knitr::kable(Candido)
+```
+# van Maaren study
+This study did not report relative differences. We calculated the relative differences between the observed and predicted number of deaths based on the total number, the observed and the predicted number of survivors. We computed the p-values using Chi square goodness-of-fit.
+```{r van maaren study}
+vanMaaren <- as.data.frame(
+  matrix(c(8834, 6404.2, 6493, 
+           7263, 5454.2, 5460,
+           1571, 950, 1033,
+           495, 393.3, 404), nrow = 4, byrow= T, dimnames = list(c("all", "ER+", "ER-", "<40"), c("totalnumber", "predSurnumber", "obsSurnumber"))))
+vanMaaren <- vanMaaren %>%
+  mutate(predMornumber = totalnumber - predSurnumber,
+         obsMornumber = totalnumber - obsSurnumber) %>%
+  mutate(RDiff = round((predMornumber - obsMornumber)/predMornumber *100, 2),
+         pvalue = chisq.fun(pred = predMornumber, obs = obsMornumber))
+
+knitr::kable(vanMaaren)
+```
+
+# Gray study
+This study only report relative differences but not their P-values. We computed the p-values using Chi square goodness-of-fit.
+```{r Gray study}
+Gray <- as.data.frame(
+  matrix(c(17106, 5260, 5157,
+           14069, 4023, 3850,
+           3037, 1237, 1307,
+           249, 71, 79,
+           3229, 621, 711), nrow = 5, byrow= T, dimnames = list(c("all", "ER+", "ER-", "<35", "35-49"), 
+                                                                c("totalnumber", "obsMornumber", "predMornumber"))))
+Gray <- Gray %>%
+  mutate(RDiff = round((predMornumber - obsMornumber)/obsMornumber *100, 2),
+         pvalue = chisq.fun(pred = predMornumber, obs = obsMornumber))
+
+knitr::kable(Gray)
+```
+
+# Aguirre study
+This study did not directly report relative differences. We calculated the relative differences between the observed and predicted mortality rates based on the observed and the predicted survival rates. The study did not report the number of survivors or deaths, only the total number, predicted and observed survival rates were available. We approximated the number of deaths using the totol number multiply the survival rates. The P-values were calculated using Chi-square goodness of fit. 
+```{r Aguirre study}
+Aguirre <- as.data.frame(
+  matrix(c(429, 0.96, 0.967,
+           106, 0.887, 0.834), nrow = 2, byrow= T, dimnames = list(c("ER+", "ER-"), 
+                                                                   c("totalnumber","obsSurvrate", "predSurvrate"))))
+
+Aguirre <- Aguirre %>%
+  mutate(predMornumber = totalnumber * (1 - predSurvrate),
+         obsMornumber = totalnumber * (1 - obsSurvrate),
+         RDiff = round(((1 - predSurvrate) - (1 - obsSurvrate))/(1 - predSurvrate) *100, 2),
+         pvalue = chisq.fun(pred = predMornumber, obs = obsMornumber))
+knitr::kable(Aguirre)
+```
+
+# Zaguirre study
+This study did not directly report relative differences. We calculated the relative differences between the observed and predicted mortality rates based on the observed and the predicted survival rates. The study did not report the number of survivors or deaths, only the total number, predicted and observed survival rates were available. We approximated the number of deaths using the totol number multiply the survival rates. The P-values were calculated using Chi-square goodness of fit. 
+```{r Zaguirre study}
+Zaguirre <- as.data.frame(
+  matrix(c(636, 0.86, 0.884,
+           525, 0.888, 0.909,
+           111, 0.714, 0.77,
+           36, 0.94, 0.932), nrow = 4, byrow= T, dimnames = list(c("all","ER+", "ER-", "<40"), 
+                                                                 c("totalnumber","predSurvrate", "obsSurvrate"))))
+
+Zaguirre <- Zaguirre %>%
+  mutate(predMornumber = totalnumber * (1 - predSurvrate),
+         obsMornumber = totalnumber * (1 - obsSurvrate),
+         RDiff = round(((1 - predSurvrate) - (1 - obsSurvrate))/(1 - predSurvrate) *100, 2),
+         pvalue = chisq.fun(pred = predMornumber, obs = obsMornumber))
+knitr::kable(Zaguirre)
+```
+
+# Grootes
+This study did not report relative differences. We calculated the relative differences between the observed and predicted number of deaths. We computed the p-values using Chi square goodness-of-fit.
+```{r Grootes study}
+Grootes <- as.data.frame(
+  matrix(c(1141,	1151,	940,
+           617,	623,	548,
+           523,	528,	392), nrow = 3, byrow= T, dimnames = list(c("all","ER+", "ER-"), 
+                                                               c("v22Mornumber", "v23Mornumber", "obsMornumber"))))
+
+Grootes <- Grootes %>%
+  mutate(RDiffv22 = round((v22Mornumber - obsMornumber)/v22Mornumber *100, 2),
+         RDiffv23 = round((v23Mornumber - obsMornumber)/v23Mornumber*100, 2),
+         v22pvalue = chisq.fun(pred = v22Mornumber, obs = obsMornumber),
+         v23pvalue = chisq.fun(pred = v23Mornumber, obs = obsMornumber))
+knitr::kable(Grootes)
+```
+# Agostinetto 
+This study did not directly report relative differences. We calculated the relative differences between the observed and predicted mortality rates based on the observed and the predicted survival rates. The study did not report the number of survivors or deaths, only the total number, predicted and observed survival rates were available. We approximated the number of deaths using the totol number multiply the survival rates. The P-values were calculated using Chi-square goodness of fit. 
+```{r Agostinetto study}
+Agostinetto <- as.data.frame(
+  matrix(c(2794, 0.88, 0.9469,
+           495, 0.9040, 0.9564,
+           1185, 0.8020, 0.9315,
+           1609, 0.9310, 0.9582), nrow = 4, byrow= T, 
+         dimnames = list(c("All patients","<= 40 years",
+                           "HR-","HR+"), c("totalnumber", "predSurvrate", "obsSurvrate"))))
+Agostinetto <- Agostinetto %>%
+  mutate(predMornumber = totalnumber * (1 - predSurvrate),
+         obsMornumber = totalnumber * (1 - obsSurvrate),
+         RDiff = round(((1 - predSurvrate) - (1 - obsSurvrate))/(1 - predSurvrate) *100, 2),
+         pvalue = chisq.fun(pred = predMornumber, obs = obsMornumber))
+knitr::kable(Agostinetto)
+
+```
+
+# Muranen study
+This study did not directly report relative differences. We calculated the relative differences between the observed and predicted mortality rates based on the observed and the predicted survival rates. The study did not report the number of survivors or deaths, only the total number of BRCA1, BRCA2 carriers, predicted and observed survival rates according to ER status were available. The exact numbers of BRCA1, BRCA2 carriers with different ER status were not available either, as there were up to 40% missingness in the ER status, and the observed the study used multiple-imputation 
+
+We approximated the number of deaths using the totol number multiply the survival rates. The P-values were calculated using Chi-square goodness of fit. 
+```{r Muranne study}
+#CIMBA BRCA1: 2892; BRCA2: 1813
+#BCAC  BRCA1: 316;  BRCA2: 432
+BRCA1CIMBAERneg <- 2892 * 0.757 * 0.959
+BRCA1CIMBAERpos <- 2892 * 0.243 * 1
+BRCA2CIMBAERneg <- 1813 * 0.222 * 1
+BRCA2CIMBAERpos <- 1813 * 0.778 * 0.962
+
+BRCA1BCACERneg <- 316 * 0.716 * 0.938
+BRCA1BCACERpos <- 316 * 0.284 * 0.939
+BRCA2BCACERneg <- 432 * 0.254 * 0.957
+BRCA2BCACERpos <- 432 * 0.746 * 0.971
+
+Muranen <- as.data.frame(
+  matrix(c(BRCA1CIMBAERpos, 0.17, 0.13,
+           BRCA2CIMBAERpos, 0.18, 0.19,
+           BRCA1CIMBAERneg, 0.23, 0.16,
+           BRCA2CIMBAERneg, 0.25, 0.15,
+           BRCA2BCACERpos, 0.20, 0.22,
+           BRCA1BCACERneg, 0.28, 0.21), nrow = 6, byrow= T, 
+         dimnames = list(c("CIMBA_BRCA1_ER+","CIMBA_BRCA2_ER+",
+                           "CIMBA_BRCA1_ER-","CIMBA_BRCA2_ER-",
+                           "BCAC_BRCA2_ER+","BCAC_BRCA1_ER-"), c("totalnumber", "predMorrate", "obsMorrate"))))
+
+Muranen <- Muranen %>%
+  mutate(predMornumber = totalnumber * predMorrate,
+         obsMornumber = totalnumber * obsMorrate,
+         RDiff = round((predMorrate - obsMorrate)/predMorrate *100, 2),
+         pvalue = chisq.fun(pred = predMornumber, obs = obsMornumber))
+knitr::kable(Muranen)
+```
+
+# Session information
+```{r info}
+sessionInfo()
+```
+

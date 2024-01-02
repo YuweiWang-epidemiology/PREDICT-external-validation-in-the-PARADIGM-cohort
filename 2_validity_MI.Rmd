@@ -1,0 +1,669 @@
+---
+title: "PREDICT_PARADIGM: Model Validity of PREDICT v2.2 and v2.3"
+author: "Yuwei Wang"
+date:  "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+  toc_depth: 3  
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# READ ME
+The R script is designed for our manuscript entitled the external validation and clinical utility assessment of PREDICT breast cancer prognostic model in young women with node-negative breast cancer. This R script assessed the performance of PREDICT v2.2 and PREDICT v2.3 in all women diagnosed with node-negative breast cancer. Using the script, we generated results for Table 3, Supplementary Table 1 and Supplementary Table 2.
+# Load the libraries
+```{r load the libraries, message=FALSE, warning=FALSE}
+library(readxl)
+library(readr)
+library(dplyr)
+library(plyr)
+library(rms)
+library(ggplot2)
+library(survminer)
+library(survival)
+library(splines)
+library(knitr)
+library(table1)
+library(boot)
+library(tidyverse)
+library(rsample)
+library(timeROC)
+library(pec)
+library(riskRegression)
+library(ggplot2)
+```
+
+# Load the imputed datasets
+In the previous script, we performed multiple imputation and ran the PREDICT v2.2 and v2.3 algorithms in the imputed dataset. After runing the two models, we generated v2.2-predicted and v2.3-predicted all-cause mortality. The two datasets are named as dataimpute_v22 and dataimpute_v23, respecitively. 
+```{r load two datasets, include=FALSE}
+TNBC <- read_csv("/DATA/users/yu.wang/8_PREDICT/PREDICT_PARADIGM_project/1_Data/TNBC485_BRCA1statusupdate_in_August_2022.csv")
+#table(TNBC$gBRCA1, TNBC$BRCA2, useNA = "always")
+gBRCAmnr <- TNBC$palga_nr[which(TNBC$gBRCA1 == 1 | TNBC$BRCA2 == "gBRCA2m")]
+gBRCAwtnr<- TNBC$palga_nr[which(TNBC$gBRCA1 == 0 & TNBC$BRCA2 %in% c("sBRCA2m", "BRCA2wt"))]
+
+dataimpute_v22 <- read.csv(file='/DATA/users/yu.wang/8_PREDICT/PREDICT_PARADIGM_project/1_Data/dataimpute_v22_July.csv',stringsAsFactors=F,header=T,sep = ",") %>%
+  dplyr::select(-X) %>%
+  mutate(gBRCA12 = ifelse(palga_nr %in% gBRCAmnr, 1,
+                          ifelse(palga_nr %in% gBRCAwtnr, 0, NA)))
+
+dataimpute_v23 <- read.csv(file='/DATA/users/yu.wang/8_PREDICT/PREDICT_PARADIGM_project/1_Data/dataimpute_v23_July.csv',stringsAsFactors=F,header=T,sep = ",") %>%
+  dplyr::select(-X) %>%
+  mutate(gBRCA12 = ifelse(palga_nr %in% gBRCAmnr, 1,
+                          ifelse(palga_nr %in% gBRCAwtnr, 0, NA)))
+```
+
+We excluded women under 25, as PREDICT doesn't provide predictions for women under 25.
+```{r datasets for model v22}
+## all women
+df_v22 <- dataimpute_v22 %>%
+  filter(T_LEEFT >= 25) %>%
+  mutate(intrsub = ifelse((er == 1 | pr == 1) & her2 == 0, "HRposHER2neg",
+       ifelse((er == 1| pr == 1) & her2 == 1, "HRposHER2pos",
+              ifelse(er == 0 & pr == 0 & her2 == 0, "HRnegHER2neg",
+                     ifelse(er == 0 & pr == 0 & her2 == 1, "HRnegHER2pos", NA)))))
+
+## women with ER-positive tumors
+df_v22_ERpos <- df_v22 %>%
+        filter(ER.num > 0)
+## women with ER-negative tumors
+df_v22_ERneg <- df_v22 %>%
+        filter(ER.num == 0)
+
+## women of each subtype
+df_v22_HRposHER2neg <- df_v22 %>%
+  filter(intrsub == "HRposHER2neg")
+
+df_v22_HRposHER2pos <- df_v22 %>%
+  filter(intrsub == "HRposHER2pos")
+
+df_v22_HRnegHER2pos <- df_v22 %>%
+  filter(intrsub == "HRnegHER2pos")
+
+df_v22_HRnegHER2neg <- df_v22 %>%
+  filter(intrsub == "HRnegHER2neg")
+
+### women of TNBC with gBRCA1/2m or gBRCA1/2wt
+df_v22_HRnegHER2neg_gBRCA12m <- df_v22_HRnegHER2neg %>%
+  filter(gBRCA12 == 1)
+df_v22_HRnegHER2neg_gBRCA12wt <- df_v22_HRnegHER2neg %>%
+  filter(gBRCA12 == 0)
+```
+
+```{r datasets for model v23}
+## all women
+df_v23 <- dataimpute_v23 %>%
+  filter(T_LEEFT >= 25) %>%
+  mutate(intrsub = ifelse((er == 1 | pr == 1) & her2 == 0, "HRposHER2neg",
+       ifelse((er == 1| pr == 1) & her2 == 1, "HRposHER2pos",
+              ifelse(er == 0 & pr == 0 & her2 == 0, "HRnegHER2neg",
+                     ifelse(er == 0 & pr == 0 & her2 == 1, "HRnegHER2pos", NA)))))
+
+## women with ER-positive tumors
+df_v23_ERpos <- df_v23 %>%
+        filter(ER.num > 0)
+## women with ER-negative tumors
+df_v23_ERneg <- df_v23 %>%
+        filter(ER.num == 0)
+
+## women of each subtype
+df_v23_HRposHER2neg <- df_v23 %>%
+  filter(intrsub == "HRposHER2neg")
+
+df_v23_HRposHER2pos <- df_v23 %>%
+  filter(intrsub == "HRposHER2pos")
+
+df_v23_HRnegHER2pos <- df_v23 %>%
+  filter(intrsub == "HRnegHER2pos")
+
+df_v23_HRnegHER2neg <- df_v23 %>%
+  filter(intrsub == "HRnegHER2neg")
+
+### women of TNBC with gBRCA1/2m or gBRCA1/2wt
+df_v23_HRnegHER2neg_gBRCA12m <- df_v23_HRnegHER2neg %>%
+  filter(gBRCA12 == 1)
+df_v23_HRnegHER2neg_gBRCA12wt <- df_v23_HRnegHER2neg %>%
+  filter(gBRCA12 == 0)
+```
+
+# Load functions
+We made several functions for pooling results of calibration and discrimination.
+
+## Functions for pooling estimates 
+pool_estimate can pool the results from estimation and the corresponding standard error of each imputed dataset, and was adapted from the pool_auc function from the package psfmi.This function follows Rubin's rule (note that the estimation is not log-transformed). The function returns the pooled estimation and 95% confidence interval.
+```{r pooling function}
+pool_estimate <- function(est, se, nimp) {
+  RR_se <- function(est, se, nimp){ # a function to calculate total SE
+    m <- nimp
+    w_var <- mean(se^2) # within variance
+    b_var <- var(est) # between variance
+    t_var <- w_var + (1 + (1/m)) * b_var # total variance
+    se_total <- sqrt(t_var) # total se
+    r <- (1 + 1 / m) * (b_var / w_var)
+    v <- (m - 1) * (1 + (1/r))^2 #degree of freedom
+    t <- qt(0.975, v)
+    res <- c(se_total, t)
+    return(res)
+  }
+  
+  est <- unlist(est)
+  se <- unlist(se)
+  if(length(est) != nimp)
+    stop("Include c-statistic value for each imputed dataset")
+  
+  mean_est <- format(round(mean(est), 2), nsmall = 2)
+  se_total <- RR_se(est, se, nimp=nimp)
+  uCI <- format(round(mean(est) + (se_total[2]*se_total[1]), 2), nsmall = 2)
+  lCI <- format(round(mean(est) - (se_total[2]*se_total[1]), 2), nsmall = 2)
+  
+  res <- paste0(mean_est, " (", lCI, "-", uCI, ")")
+
+  return(res)
+}
+```
+
+## Function for pooling data for calibration plot
+pool_caliplot was only slightly different from pool_estimation. It returns the pooled estiamtion, lower 95% confidence interval and upper 95% confidence interval separately.
+```{r pooling function for calibration plot}
+pool_caliplot <- function(est, se, nimp) {
+  RR_se <- function(est, se, nimp){ # a function to calculate total SE
+    m <- nimp
+    w_var <- mean(se^2) # within variance
+    b_var <- var(est) # between variance
+    t_var <- w_var + (1 + (1/m)) * b_var # total variance
+    se_total <- sqrt(t_var) # total se
+    r <- (1 + 1 / m) * (b_var / w_var)
+    v <- (m - 1) * (1 + (1/r))^2 #degree of freedom
+    t <- qt(0.975, v)
+    res <- c(se_total, t)
+    return(res)
+  }
+  
+  est <- unlist(est)
+  se <- unlist(se)
+  if(length(est) != nimp)
+    stop("Include c-statistic value for each imputed dataset")
+  
+  mean_est <- mean(est)
+  se_total <- RR_se(est, se, nimp=nimp)
+  uCI <- mean(est) + (se_total[2]*se_total[1])
+  lCI <- mean(est) - (se_total[2]*se_total[1])
+  
+  res <- c(mean_est,  lCI,  uCI)
+
+  return(res)
+}
+```
+
+pool_caliplot_df returns a dataset that can be used to generate calibration plots. The function first divides women into quintiles based on their expected risks. Then the observed risks and its lower and upper confidence intervals are calculated, as well as the mean of the expected risks in each quintile.
+```{r pooling data for plot}
+pool_caliplot_df <- function(data, time, status, impvar, nimp, predmort, tmax) {
+    res_obs <- matrix(NA, nimp, 5) 
+    res_se <- matrix(NA, nimp, 5)
+    res_exp <- matrix(NA, nimp, 5)
+
+    for (i in 1:nimp) {
+
+      df <- data[data[impvar] == i, ]
+      
+      q5 <- cut(df[, predmort],
+                breaks = quantile(df[, predmort], probs = seq(0, 1, 0.20)), include.lowest = TRUE)
+      
+      df$risk_q5 <- factor(q5, levels = levels(q5), labels = c('q1', 'q2', 'q3', 'q4', "q5"))
+      
+      exp_risk <- tapply(df[, predmort], df[, "risk_q5"], mean)
+      
+      surv_fit <- survfit(Surv(df[, time], df[, status]) ~ df[, "risk_q5"])
+      #obs_surv5 <- survfit(Surv(timeyr, delta) ~ q5_5yr_f, data = df)
+      obs_risk <- 1 - summary(surv_fit ,times = tmax)$surv
+      obs_se <- summary(surv_fit ,times = tmax)$std.err
+      
+      res_obs[i, ] <- obs_risk
+      res_se[i, ] <- obs_se
+      res_exp[i, ] <- exp_risk
+    }
+
+    # Pool
+    pool_obs_q1 <- pool_caliplot(res_obs[, 1], res_se[, 1], nimp = nimp)
+    pool_obs_q2 <- pool_caliplot(res_obs[, 2], res_se[, 2], nimp = nimp)
+    pool_obs_q3 <- pool_caliplot(res_obs[, 3], res_se[, 3], nimp = nimp)
+    pool_obs_q4 <- pool_caliplot(res_obs[, 4], res_se[, 4], nimp = nimp)
+    pool_obs_q5 <- pool_caliplot(res_obs[, 5], res_se[, 5], nimp = nimp)
+    
+    pool_exp <- colMeans(res_exp)
+    
+    caliplot_df <- cbind(rbind(pool_obs_q1, pool_obs_q2, 
+                               pool_obs_q3, pool_obs_q4, 
+                               pool_obs_q5), pool_exp) %>%
+      as.data.frame(.)
+    names(caliplot_df) <- c("obs.y", "obs.lower", "obs.upper", "exp.x")
+    
+    return(caliplot_df)
+}
+```
+
+
+## Functions for pooling O/E ratios and AUC
+pool_OEratio computes observed risk and its standard errors, as well as the mean of the expected risk to calculate O/E ratio, i.e. the ratio between observed and expected risks. In addition, it also returns the number of events during different follow-up times.
+```{r pooling function for OEratio}
+pool_OEratio <- function(data, time, status, impvar, nimp, predmort, tmax) {
+    res <- matrix(NA, nimp, 4) 
+    # a results matrix for O/E ratio, se of O/E ratio, number of patients and number of events
+
+    for (i in 1:nimp) {
+
+      df <- data[data[impvar] == i, ]
+      nwomen <- dim(df)[1]
+      
+      surv_fit <- survfit(Surv(df[, time], df[, status]) ~ 1)
+      
+      obs_risk <- 1 - summary(surv_fit, times = tmax)$surv
+      obs_se <- summary(surv_fit, times = tmax)$std.err
+      nevent <- summary(surv_fit, times = tmax)$n.event
+      
+      exp_risk <- mean(df[, predmort])
+      
+      # O/E ratio
+      OE_stats <- obs_risk / exp_risk
+      se_OE_stats <- obs_se / exp_risk
+
+      res[i, ] <- c(OE_stats, se_OE_stats, nwomen, nevent)
+    }
+
+    # Pool
+    pool_OE <- pool_estimate(res[, 1], res[, 2], nimp = nimp)
+    
+    nwomen <- round(median(res[, 3]), 0)
+    nevent <- median(res[, 4])
+    
+
+    return(c(nwomen, nevent, pool_OE))
+}
+```
+
+pool_AUC computes AUC and its 95% confidence interval. This function contains timeROC from timeROC pacakge.
+```{r pooling function for AUC}
+pool_AUC <- function(data, time, status, impvar, nimp, predmort, tmax) {
+    res <- matrix(NA, nimp, 2) 
+
+    for (i in 1:nimp) {
+
+      df <- data[data[impvar] == i, ]
+      
+      tAUC <- timeROC(T = df[, time], delta = df[, status],
+                  marker = df[, predmort], weighting="marginal", 
+                  times = tmax, cause = 1, ROC = F, iid = TRUE)
+      
+      res[i, ] <- c(tAUC$AUC[2], tAUC$inference$vect_sd_1[2])
+    }
+
+    # Pool
+    pool_AUCres <- pool_estimate(res[, 1], res[, 2], nimp = nimp)
+  
+    return(pool_AUCres)
+}
+
+
+```
+
+
+
+# Performance of PREDICT v2.2
+## Calibration in the large
+```{r v22 OE ratio}
+#10-year
+OE10_v22_all <- pool_OEratio(df_v22, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v22_ERpos <- pool_OEratio(df_v22_ERpos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v22_ERneg <- pool_OEratio(df_v22_ERneg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v22_HRposHER2neg <- pool_OEratio(df_v22_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v22_HRposHER2pos <- pool_OEratio(df_v22_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v22_HRnegHER2pos <- pool_OEratio(df_v22_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v22_HRnegHER2neg <- pool_OEratio(df_v22_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v22_HRnegHER2neg_gBRCA12m  <- pool_OEratio(df_v22_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v22_HRnegHER2neg_gBRCA12wt <- pool_OEratio(df_v22_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+
+res_OE10_v22 <- matrix(c(OE10_v22_all, OE10_v22_ERpos, OE10_v22_ERneg, 
+                         OE10_v22_HRposHER2neg, OE10_v22_HRposHER2pos, OE10_v22_HRnegHER2pos, OE10_v22_HRnegHER2neg,
+                         OE10_v22_HRnegHER2neg_gBRCA12m, OE10_v22_HRnegHER2neg_gBRCA12wt),
+                    nrow=9, byrow=T,
+                    dimnames = list(c('All women','ER-positive','ER-negative',
+                                      'HRposHER2neg', 'HRposHER2pos', 'HRnegHER2pos', 'HRnegHER2neg',
+                                      'gBRCA12m', 'gBRCA12wt'),
+                                (c('v22_No.women', 'v22_No.event', 'v22_O/E ratio'))))
+
+res_OE10_v22
+
+#5-year and-15 year
+OE5_v22_all <- pool_OEratio(df_v22, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v22_ERpos <- pool_OEratio(df_v22_ERpos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v22_ERneg <- pool_OEratio(df_v22_ERneg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v22_HRposHER2neg <- pool_OEratio(df_v22_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v22_HRposHER2pos <- pool_OEratio(df_v22_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v22_HRnegHER2pos <- pool_OEratio(df_v22_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v22_HRnegHER2neg <- pool_OEratio(df_v22_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v22_HRnegHER2neg_gBRCA12m  <- pool_OEratio(df_v22_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v22_HRnegHER2neg_gBRCA12wt <- pool_OEratio(df_v22_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+
+
+OE15_v22_all <- pool_OEratio(df_v22, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v22_ERpos <- pool_OEratio(df_v22_ERpos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v22_ERneg <- pool_OEratio(df_v22_ERneg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v22_HRposHER2neg <- pool_OEratio(df_v22_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v22_HRposHER2pos <- pool_OEratio(df_v22_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v22_HRnegHER2pos <- pool_OEratio(df_v22_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v22_HRnegHER2neg <- pool_OEratio(df_v22_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v22_HRnegHER2neg_gBRCA12m  <- pool_OEratio(df_v22_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v22_HRnegHER2neg_gBRCA12wt <- pool_OEratio(df_v22_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+```
+
+
+## Calibration plot
+We made a calibration plot of PREDICT v2.2 in all women, women with ER-positive tumors and women with ER-negative tumors.
+```{r calibratio plot v22}
+calplot10_dfv22 <- pool_caliplot_df(df_v22, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+calplot10_dfv22_ERpos <- pool_caliplot_df(df_v22_ERpos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+calplot10_dfv22_ERneg <- pool_caliplot_df(df_v22_ERneg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+```
+
+```{r calibration all women, fig.width=12, fig.height=12}
+caliplot_dfv22_all <-
+  ggplot(calplot10_dfv22, aes(x = exp.x, y = obs.y)) +
+  geom_point(color = "black", size = 3, shape = 15) +
+  geom_line(color = "black", size = 1) +
+  #abline! I used geomline instead of abline because I could specify the length of the abline
+  geom_line(data = data.frame(x = c(0, 0.41), y = c(0, 0.41)), 
+            aes(x, y), color = "black", linetype = "dashed") +
+  geom_errorbar(aes(ymin = obs.lower, ymax = obs.upper),
+                width = 0.02, color = "black", size = 0.7) +
+  #geom_vline(xintercept = 0.12, color = "red", linetype = "dashed") + 
+  xlim(0, 0.41) + ylim(0, 0.41) +
+  xlab("Predicted 10-year all-cause mortality") +
+  ylab("Observed 10-year all-cause mortality") +
+  ggtitle("A. Calibration plot in all women") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1.5, size = 20), 
+        text = element_text(family = "Arial"),
+        panel.background = element_rect(fill = "white"),
+        axis.title = element_text(size = 16),
+        axis.line = element_line(color = "black", linewidth = 0.8),
+        axis.text = element_text(size = 12)) 
+caliplot_dfv22_all
+```
+
+```{r calibration ERpos, fig.width=12, fig.height=12}
+caliplot_dfv22_ERpos <-
+  ggplot(calplot10_dfv22_ERpos, aes(x = exp.x, y = obs.y)) +
+  geom_point(color = "black", size = 3, shape = 15) +
+  geom_line(color = "black", size = 1) +
+  #abline! I used geomline instead of abline because I could specify the length of the abline
+  geom_line(data = data.frame(x = c(0, 0.41), y = c(0, 0.41)), 
+            aes(x, y), color = "black", linetype = "dashed") +
+  geom_errorbar(aes(ymin = obs.lower, ymax = obs.upper),
+                width = 0.02, color = "black", size = 0.7) +
+  #geom_vline(xintercept = 0.12, color = "red", linetype = "dashed") + 
+  xlim(0, 0.41) + ylim(0, 0.41) +
+  xlab("Predicted 10-year all-cause mortality") +
+  ylab("Observed 10-year all-cause mortality") +
+  ggtitle("B. Calibration plot in women with ER-positive tumors") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1.5, size = 20), 
+        text = element_text(family = "Arial"),
+        panel.background = element_rect(fill = "white"),
+        axis.title = element_text(size = 16),
+        axis.line = element_line(color = "black", linewidth = 0.8),
+        axis.text = element_text(size = 12)) 
+caliplot_dfv22_ERpos
+```
+
+```{r calibration ERneg, fig.width=12, fig.height=12}
+caliplot_dfv22_ERneg <-
+  ggplot(calplot10_dfv22_ERneg, aes(x = exp.x, y = obs.y)) +
+  geom_point(color = "black", size = 3, shape = 15) +
+  geom_line(color = "black", size = 1) +
+  #abline! I used geomline instead of abline because I could specify the length of the abline
+  geom_line(data = data.frame(x = c(0, 0.41), y = c(0, 0.41)), 
+            aes(x, y), color = "black", linetype = "dashed") +
+  geom_errorbar(aes(ymin = obs.lower, ymax = obs.upper),
+                width = 0.02, color = "black", size = 0.7) +
+  #geom_vline(xintercept = 0.12, color = "red", linetype = "dashed") + 
+  xlim(0, 0.41) + ylim(0, 0.41) +
+  xlab("Predicted 10-year all-cause mortality") +
+  ylab("Observed 10-year all-cause mortality") +
+  ggtitle("C. Calibration plot in women with ER-negative tumors") +
+  theme(plot.title = element_text(hjust = 0.5, vjust = 1.5, size = 20), 
+        text = element_text(family = "Arial"),
+        panel.background = element_rect(fill = "white"),
+        axis.title = element_text(size = 16),
+        axis.line = element_line(color = "black", linewidth = 0.8),
+        axis.text = element_text(size = 12)) 
+caliplot_dfv22_ERneg
+```
+```{r combine plots, include=FALSE}
+# create a ggplot with white background
+plotnull <- ggplot() +
+  theme(panel.background = element_rect(fill = "white"))
+
+Combined_caliplot10_dfv22 <-
+  ggarrange(caliplot_dfv22_all, plotnull, caliplot_dfv22_ERpos, caliplot_dfv22_ERneg, 
+          ncol = 2, nrow = 2,
+          heights = 1, widths = 1)
+ggsave("/DATA/users/yu.wang/8_PREDICT/PREDICT_PARADIGM_project/3_Results and plots/Plots/Combined_caliplot10_dfv22.png", 
+       plot = Combined_caliplot10_dfv22, width = 15, height = 15, dpi = 600)
+```
+## Discrimination
+Discrimination ability was calculated using time-dependent area under the ROC curve.
+```{r v22 ROC}
+#10-year
+AUC10_v22_all <- pool_AUC(df_v22, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v22_ERpos <- pool_AUC(df_v22_ERpos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v22_ERneg <- pool_AUC(df_v22_ERneg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v22_HRposHER2neg <- pool_AUC(df_v22_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v22_HRposHER2pos <- pool_AUC(df_v22_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v22_HRnegHER2pos <- pool_AUC(df_v22_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v22_HRnegHER2neg <- pool_AUC(df_v22_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v22_HRnegHER2neg_gBRCA12m  <- pool_AUC(df_v22_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v22_HRnegHER2neg_gBRCA12wt <- pool_AUC(df_v22_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+
+res_AUC10_v22 <- matrix(c(AUC10_v22_all, AUC10_v22_ERpos, AUC10_v22_ERneg, 
+                         AUC10_v22_HRposHER2neg, AUC10_v22_HRposHER2pos, AUC10_v22_HRnegHER2pos, AUC10_v22_HRnegHER2neg,
+                         AUC10_v22_HRnegHER2neg_gBRCA12m, AUC10_v22_HRnegHER2neg_gBRCA12wt),
+                    nrow=9, byrow=T,
+                    dimnames = list(c('All women','ER-positive','ER-negative',
+                                      'HRposHER2neg', 'HRposHER2pos', 'HRnegHER2pos', 'HRnegHER2neg',
+                                      'gBRCA12m', 'gBRCA12wt'),
+                                (c('v22_AUC'))))
+
+res_AUC10_v22
+
+#5-year and 15-year
+AUC5_v22_all <- pool_AUC(df_v22, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v22_ERpos <- pool_AUC(df_v22_ERpos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v22_ERneg <- pool_AUC(df_v22_ERneg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v22_HRposHER2neg <- pool_AUC(df_v22_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v22_HRposHER2pos <- pool_AUC(df_v22_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v22_HRnegHER2pos <- pool_AUC(df_v22_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v22_HRnegHER2neg <- pool_AUC(df_v22_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v22_HRnegHER2neg_gBRCA12m  <- pool_AUC(df_v22_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v22_HRnegHER2neg_gBRCA12wt <- pool_AUC(df_v22_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+
+
+AUC15_v22_all <- pool_AUC(df_v22, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v22_ERpos <- pool_AUC(df_v22_ERpos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v22_ERneg <- pool_AUC(df_v22_ERneg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v22_HRposHER2neg <- pool_AUC(df_v22_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v22_HRposHER2pos <- pool_AUC(df_v22_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v22_HRnegHER2pos <- pool_AUC(df_v22_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v22_HRnegHER2neg <- pool_AUC(df_v22_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v22_HRnegHER2neg_gBRCA12m  <- pool_AUC(df_v22_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v22_HRnegHER2neg_gBRCA12wt <- pool_AUC(df_v22_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+```
+
+# Performance of PREDICT v2.3
+## Calibration in the large
+```{r v23 OE ratio}
+#10-year
+OE10_v23_all <- pool_OEratio(df_v23, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v23_ERpos <- pool_OEratio(df_v23_ERpos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v23_ERneg <- pool_OEratio(df_v23_ERneg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v23_HRposHER2neg <- pool_OEratio(df_v23_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v23_HRposHER2pos <- pool_OEratio(df_v23_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v23_HRnegHER2pos <- pool_OEratio(df_v23_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v23_HRnegHER2neg <- pool_OEratio(df_v23_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v23_HRnegHER2neg_gBRCA12m  <- pool_OEratio(df_v23_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+OE10_v23_HRnegHER2neg_gBRCA12wt <- pool_OEratio(df_v23_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+
+res_OE10_v23 <- matrix(c(OE10_v23_all, OE10_v23_ERpos, OE10_v23_ERneg, 
+                         OE10_v23_HRposHER2neg, OE10_v23_HRposHER2pos, OE10_v23_HRnegHER2pos, OE10_v23_HRnegHER2neg,
+                         OE10_v23_HRnegHER2neg_gBRCA12m, OE10_v23_HRnegHER2neg_gBRCA12wt),
+                    nrow=9, byrow=T,
+                    dimnames = list(c('All women','ER-positive','ER-negative',
+                                      'HRposHER2neg', 'HRposHER2pos', 'HRnegHER2pos', 'HRnegHER2neg',
+                                      'gBRCA12m', 'gBRCA12wt'),
+                                (c('v23_No.women', 'v23_No.event', 'v23_O/E ratio'))))
+
+res_OE10_v23
+
+#5-year and-15 year
+OE5_v23_all <- pool_OEratio(df_v23, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v23_ERpos <- pool_OEratio(df_v23_ERpos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v23_ERneg <- pool_OEratio(df_v23_ERneg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v23_HRposHER2neg <- pool_OEratio(df_v23_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v23_HRposHER2pos <- pool_OEratio(df_v23_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v23_HRnegHER2pos <- pool_OEratio(df_v23_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v23_HRnegHER2neg <- pool_OEratio(df_v23_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v23_HRnegHER2neg_gBRCA12m  <- pool_OEratio(df_v23_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+OE5_v23_HRnegHER2neg_gBRCA12wt <- pool_OEratio(df_v23_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+
+
+OE15_v23_all <- pool_OEratio(df_v23, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v23_ERpos <- pool_OEratio(df_v23_ERpos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v23_ERneg <- pool_OEratio(df_v23_ERneg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v23_HRposHER2neg <- pool_OEratio(df_v23_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v23_HRposHER2pos <- pool_OEratio(df_v23_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v23_HRnegHER2pos <- pool_OEratio(df_v23_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v23_HRnegHER2neg <- pool_OEratio(df_v23_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v23_HRnegHER2neg_gBRCA12m  <- pool_OEratio(df_v23_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+OE15_v23_HRnegHER2neg_gBRCA12wt <- pool_OEratio(df_v23_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+```
+## Discrimination
+Discrimination ability was calculated using time-dependent area under the ROC curve.
+```{r v23 ROC}
+#10-year
+AUC10_v23_all <- pool_AUC(df_v23, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v23_ERpos <- pool_AUC(df_v23_ERpos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v23_ERneg <- pool_AUC(df_v23_ERneg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v23_HRposHER2neg <- pool_AUC(df_v23_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v23_HRposHER2pos <- pool_AUC(df_v23_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v23_HRnegHER2pos <- pool_AUC(df_v23_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v23_HRnegHER2neg <- pool_AUC(df_v23_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v23_HRnegHER2neg_gBRCA12m  <- pool_AUC(df_v23_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+AUC10_v23_HRnegHER2neg_gBRCA12wt <- pool_AUC(df_v23_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all10", tmax = 10)
+
+res_AUC10_v23 <- matrix(c(AUC10_v23_all, AUC10_v23_ERpos, AUC10_v23_ERneg, 
+                         AUC10_v23_HRposHER2neg, AUC10_v23_HRposHER2pos, AUC10_v23_HRnegHER2pos, AUC10_v23_HRnegHER2neg,
+                         AUC10_v23_HRnegHER2neg_gBRCA12m, AUC10_v23_HRnegHER2neg_gBRCA12wt),
+                    nrow=9, byrow=T,
+                    dimnames = list(c('All women','ER-positive','ER-negative',
+                                      'HRposHER2neg', 'HRposHER2pos', 'HRnegHER2pos', 'HRnegHER2neg',
+                                      'gBRCA12m', 'gBRCA12wt'),
+                                (c('v23_AUC'))))
+
+res_AUC10_v23
+
+#5-year and 15-year
+AUC5_v23_all <- pool_AUC(df_v23, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v23_ERpos <- pool_AUC(df_v23_ERpos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v23_ERneg <- pool_AUC(df_v23_ERneg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v23_HRposHER2neg <- pool_AUC(df_v23_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v23_HRposHER2pos <- pool_AUC(df_v23_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v23_HRnegHER2pos <- pool_AUC(df_v23_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v23_HRnegHER2neg <- pool_AUC(df_v23_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v23_HRnegHER2neg_gBRCA12m  <- pool_AUC(df_v23_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+AUC5_v23_HRnegHER2neg_gBRCA12wt <- pool_AUC(df_v23_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all5", tmax = 5)
+
+
+AUC15_v23_all <- pool_AUC(df_v23, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v23_ERpos <- pool_AUC(df_v23_ERpos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v23_ERneg <- pool_AUC(df_v23_ERneg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v23_HRposHER2neg <- pool_AUC(df_v23_HRposHER2neg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v23_HRposHER2pos <- pool_AUC(df_v23_HRposHER2pos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v23_HRnegHER2pos <- pool_AUC(df_v23_HRnegHER2pos, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v23_HRnegHER2neg <- pool_AUC(df_v23_HRnegHER2neg, "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v23_HRnegHER2neg_gBRCA12m  <- pool_AUC(df_v23_HRnegHER2neg_gBRCA12m , "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+AUC15_v23_HRnegHER2neg_gBRCA12wt <- pool_AUC(df_v23_HRnegHER2neg_gBRCA12wt , "timeyr", "delta", ".imp", 50, "all15", tmax = 15)
+```
+
+
+## Results summary
+### Table 3
+```{r res_table3}
+res_10 <- cbind(res_OE10_v22, res_AUC10_v22, res_OE10_v23, res_AUC10_v23) %>%
+  as_tibble() 
+res_10
+```
+### Suapplmentary Table 1
+```{r res_sTable1}
+s_res_v22 <- matrix(c(OE5_v22_all, AUC5_v22_all, 
+                    OE15_v22_all, AUC15_v22_all, 
+                    OE5_v22_ERpos, AUC5_v22_ERpos, 
+                    OE15_v22_ERpos, AUC15_v22_ERpos,
+                    OE5_v22_ERneg, AUC5_v22_ERneg, 
+                    OE15_v22_ERneg, AUC15_v22_ERneg,
+                    OE5_v22_HRposHER2neg, AUC5_v22_HRposHER2neg, 
+                    OE15_v22_HRposHER2neg, AUC15_v22_HRposHER2neg, 
+                    OE5_v22_HRposHER2pos, AUC5_v22_HRposHER2pos, 
+                    OE15_v22_HRposHER2pos, AUC15_v22_HRposHER2pos, 
+                    OE5_v22_HRnegHER2pos, AUC5_v22_HRnegHER2pos, 
+                    OE15_v22_HRnegHER2pos, AUC15_v22_HRnegHER2pos,
+                    OE5_v22_HRnegHER2neg, AUC5_v22_HRnegHER2neg, 
+                    OE15_v22_HRnegHER2neg, AUC15_v22_HRnegHER2neg,
+                    OE5_v22_HRnegHER2neg_gBRCA12m, AUC5_v22_HRnegHER2neg_gBRCA12m, 
+                    OE15_v22_HRnegHER2neg_gBRCA12m, AUC15_v22_HRnegHER2neg_gBRCA12m, 
+                    OE5_v22_HRnegHER2neg_gBRCA12wt, AUC5_v22_HRnegHER2neg_gBRCA12wt, 
+                    OE15_v22_HRnegHER2neg_gBRCA12wt, AUC15_v22_HRnegHER2neg_gBRCA12wt),
+                    nrow=9, byrow=T,
+                    dimnames = list(c('All women','ER-positive','ER-negative',
+                                      'HRposHER2neg', 'HRposHER2pos', 'HRnegHER2pos', 'HRnegHER2neg',
+                                      'gBRCA12m', 'gBRCA12wt'),
+                                (c('No.women5', 'No.event5', 'O/E ratio5', 'AUC5',
+                                   'No.women15', 'No.event15', 'O/E ratio15', 'AUC15'))))
+
+s_res_v22
+```
+
+### Suapplmentary Table 2
+```{r res_sTable2}
+s_res_v23 <- matrix(c(OE5_v23_all, AUC5_v23_all, 
+                    OE15_v23_all, AUC15_v23_all, 
+                    OE5_v23_ERpos, AUC5_v23_ERpos, 
+                    OE15_v23_ERpos, AUC15_v23_ERpos,
+                    OE5_v23_ERneg, AUC5_v23_ERneg, 
+                    OE15_v23_ERneg, AUC15_v23_ERneg,
+                    OE5_v23_HRposHER2neg, AUC5_v23_HRposHER2neg, 
+                    OE15_v23_HRposHER2neg, AUC15_v23_HRposHER2neg, 
+                    OE5_v23_HRposHER2pos, AUC5_v23_HRposHER2pos, 
+                    OE15_v23_HRposHER2pos, AUC15_v23_HRposHER2pos, 
+                    OE5_v23_HRnegHER2pos, AUC5_v23_HRnegHER2pos, 
+                    OE15_v23_HRnegHER2pos, AUC15_v23_HRnegHER2pos,
+                    OE5_v23_HRnegHER2neg, AUC5_v23_HRnegHER2neg, 
+                    OE15_v23_HRnegHER2neg, AUC15_v23_HRnegHER2neg,
+                    OE5_v23_HRnegHER2neg_gBRCA12m, AUC5_v23_HRnegHER2neg_gBRCA12m, 
+                    OE15_v23_HRnegHER2neg_gBRCA12m, AUC15_v23_HRnegHER2neg_gBRCA12m, 
+                    OE5_v23_HRnegHER2neg_gBRCA12wt, AUC5_v23_HRnegHER2neg_gBRCA12wt, 
+                    OE15_v23_HRnegHER2neg_gBRCA12wt, AUC15_v23_HRnegHER2neg_gBRCA12wt),
+                    nrow=9, byrow=T,
+                    dimnames = list(c('All women','ER-positive','ER-negative',
+                                      'HRposHER2neg', 'HRposHER2pos', 'HRnegHER2pos', 'HRnegHER2neg',
+                                      'gBRCA12m', 'gBRCA12wt'),
+                                (c('No.women5', 'No.event5', 'O/E ratio5', 'AUC5',
+                                   'No.women15', 'No.event15', 'O/E ratio15', 'AUC15'))))
+
+s_res_v23
+```
+
+## Session information
+```{r sinfo}
+sessionInfo()
+```
+
